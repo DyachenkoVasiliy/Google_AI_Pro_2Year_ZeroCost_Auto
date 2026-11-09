@@ -1,0 +1,81 @@
+
+name: Windows Web Panel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  panel:
+    runs-on: windows-latest
+    timeout-minutes: 125
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install ngrok
+
+      - name: Start protected panel
+        shell: pwsh
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          PANEL_PASSWORD: ${{ secrets.PANEL_PASSWORD }}
+        run: |
+          @'
+          import os
+          import sys
+          import time
+          import subprocess
+          import urllib.request
+          import ngrok
+
+          password = os.environ["PANEL_PASSWORD"]
+          if not password or ":" in password:
+              raise ValueError("Invalid PANEL_PASSWORD")
+
+          app = subprocess.Popen(
+              [sys.executable, "app.py"]
+          )
+
+          try:
+              for attempt in range(30):
+                  if app.poll() is not None:
+                      raise RuntimeError("FastAPI stopped")
+                  try:
+                      urllib.request.urlopen(
+                          "http://127.0.0.1:8765/",
+                          timeout=2
+                      )
+                      break
+                  except Exception:
+                      time.sleep(2)
+              else:
+                  raise RuntimeError("Panel did not start")
+
+              tunnel = ngrok.forward(
+                  "127.0.0.1:8765",
+                  authtoken_from_env=True,
+                  basic_auth=[f"admin:{password}"]
+              )
+
+              print("PANEL URL:", tunnel.url(), flush=True)
+              print("LOGIN: admin", flush=True)
+              print("Panel active for up to 2 hours.", flush=True)
+
+              time.sleep(7200)
+          finally:
+              app.terminate()
+          '@ | Set-Content -Path runner.py -Encoding utf8
+
+          python runner.py
